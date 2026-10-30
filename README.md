@@ -24,8 +24,8 @@ You need [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Wind
 
 1. **Clone the repository**
    ```bash
-   git clone <your-repo-url>
-   cd <repo-folder>
+   git clone https://github.com/rohitj861/competitor-market-research.git
+   cd competitor-market-research
    ```
 
 2. **Configure your API keys** — copy the example file and fill in your keys:
