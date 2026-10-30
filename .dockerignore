@@ -1,0 +1,23 @@
+# secrets: API keys are passed at runtime, never baked into the image
+.env
+.env.*
+!.env.example
+
+# local artefacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+reports/
+.git/
+.gitignore
+.vscode/
+.idea/
+.streamlit/secrets.toml
+
+# docs / notes not needed at runtime
+README.md
+*System prompts.txt
+Dockerfile
+docker-compose.yml
+.dockerignore

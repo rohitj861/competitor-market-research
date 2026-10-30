@@ -1,0 +1,13 @@
+services:
+  app:
+    build: .
+    image: competitor-research:latest
+    ports:
+      - "8501:8501"
+    # API keys come from .env at runtime (optional: they can also be entered in the app sidebar).
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./reports:/app/reports  # PDFs saved with "Save PDF to reports folder" appear here
+    restart: unless-stopped

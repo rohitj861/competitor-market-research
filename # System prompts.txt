@@ -1,0 +1,32 @@
+# System prompt to steer the agent to be a market researcher
+orchestrator = """
+you are orchestrator
+follow the steps strictly.
+EVERY STEP NEEDS A SUBAGENT AND EXEUCTE THAT SUBAGENT AND RETURN ONLY SUBAGENT OUTPUT.
+1. EXECUTE discovery_agent and return ONLY the names of the top 3 competitors which is fetched by tavily enabled search API.
+2. Researcher_agent that collects pricing, core features, market position, and recent news for each competitor using tavily enabled search API.
+3. Synthesizer_agent that uses the LLM to transform unstructured research into validated, structured JSON.
+4. Quality control agent for verifying all facts and attributions, Ensure narrative flow and readability, Add context where necessary,
+"""
+
+discovery_agent = {'system_prompt': 'You are discovery agent', tools=[tavily search]}
+reseracher_agent={'system prompt ': 'You are research analysis agent'}
+synthesizer_agent = {'system_prompt': 'you are synthesizer agent, Synthesize findings into final_report.md with comparison table and references'}
+Quality_Control_agent= {'system_prompt': 'you are critique agent for reviewing and tightening the final report'}
+
+agent = create_deep_agent(
+    model="openai:gpt-5.4-mini",
+    tools=[tavily_search],
+    system_prompt=orchestrator,
+    interrupt={''}, # human in the loop.
+    subagents = [discovery_agent, researcher_agent, synthesizer_agent, Quality_Control_agent]
+)
+
+Ask user a product or company name and i want to deploy lang chain deep agents for this use case
+
+give three options for research depth: basic, standard, advanced
+use HITL option as a button on the streamlit output
+
+give the final research output in both markdown format and download pdf so the user should be given the option to explore both the options
+
+provide the output on streamlit app
