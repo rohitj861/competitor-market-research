@@ -112,8 +112,10 @@ class InjectionHeuristic(Validator):
 # Inline citations: [3], [1][2], [1, 2], [3-5] / [3–5]; not Markdown links like [text](url).
 _CITE = re.compile(r"\[(\d{1,3}(?:\s*[,\u2013-]\s*\d{1,3})*)\](?!\()")
 _REF_LINE = re.compile(r"^\s*\[(\d{1,3})\][:.]?\s+.*?(https?://\S+)", re.M)
-_REF_HEADING = re.compile(r"(?im)^#{1,3}\s*(?:\d+[.)]\s*)?(?:references?|sources?|bibliography|citations?)"
-                          r"(?:\s*(?:&|and)\s*(?:references?|sources?))?\s*:?\s*$")
+# A references label on its own line: "## References", "## 7. Sources", "**Sources**", "Sources:".
+_REF_HEADING = re.compile(r"(?im)^(?:#{1,3}\s*)?(?:\*\*|__)?\s*(?:\d+[.)]\s*)?"
+                          r"(?:references?|sources?|bibliography|citations?)"
+                          r"(?:\s*(?:&|and)\s*(?:references?|sources?))?\s*:?\s*(?:\*\*|__)?\s*:?\s*$")
 _TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$", re.M)
 
 

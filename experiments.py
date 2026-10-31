@@ -241,7 +241,7 @@ def main(args) -> int:
                             for s in rec["scores"] if not s["name"].startswith("check."))
         print(f"{rec['id']:<34} {len(checks) - len(bad)}/{len(checks):<7} {quality}")
     out_dir = Path(args.output)
-    out_dir.mkdir(exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{run_name}.json"
     path.write_text(json.dumps({"run": run_name, "metadata": meta, "definitions": evaluation.SCORE_DEFINITIONS,
                                 "seconds": round(time.monotonic() - started, 1), "results": records},

@@ -157,3 +157,15 @@ def test_unrepaired_dangling_citation_is_removed_mechanically(runner, store, fak
     assert "[9]" not in out.message["content"] and "priced below Acme [1]." in out.message["content"]
     assert any("[9]" in n for n in out.notices)
     assert guards.validate("report", out.message["content"]).action == "pass"  # exports pass too
+
+
+def test_bold_or_plain_sources_label_counts_as_references():
+    import evaluation
+
+    answer = ("ClickUp is cheapest [2], below Notion [1].\n\n**Sources**\n\n"
+              "[1] https://www.notion.com/pricing\n\n[2] https://clickup.com/pricing\n")
+    for text in (answer, answer.replace("**Sources**", "Sources:")):
+        assert guards.check_citations(text) == []
+        s = {x.name: x for x in evaluation.evaluate(evaluation.EvalInput(kind="answer", response=text, question="q"))}
+        assert s["citation_integrity"].value == 1.0
+    assert guards.split_references("## Sources of revenue\n\nAds [1].\n")[1] == ""
