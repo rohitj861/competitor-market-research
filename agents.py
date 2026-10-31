@@ -114,6 +114,11 @@ REPORT_RULES = """   Content:
      target.
    - Citations: cite inline as [n]. Each DISTINCT source URL gets its own reference number —
      never group several sources under one reference. Expect roughly 8-20 references.
+   - Cite ONLY URLs that appear in the research notes, i.e. URLs returned by `internet_search`,
+     copied exactly. Never cite a URL from memory, however well known the publication. If a claim
+     has no retrieved source, remove it or support it with a retrieved source.
+   - List ONLY references you actually cite: every reference must be cited inline at least once.
+     Remove unused references and renumber so citations and references stay consistent.
    Formatting:
    - One `#` title, `##` for sections, `###` for each company; no deeper headings.
    - Leave a blank line before and after every heading, table and list.
@@ -159,7 +164,8 @@ B) FOLLOW-UP — when the user asks about research already done in this conversa
 comparison, a detail, a clarification), answer it directly and concisely from the conversation
 and the saved files (`ls`, `read_file` on {REPORT_PATH} and /research/). If new facts are
 needed, delegate one focused `researcher_agent` task. Cite sources inline as [n] with the
-matching URLs listed under a short "Sources" heading. Do NOT rewrite {REPORT_PATH} unless the
+matching URLs listed under a short "Sources" heading, using only URLs from the saved notes or
+search results, never from memory. Do NOT rewrite {REPORT_PATH} unless the
 user explicitly asks you to update the report; if they do, delegate the edit to
 `quality_control_agent` and reply with the full updated report.
 
@@ -186,8 +192,9 @@ For the single company/product you are given (a competitor, or the target itself
 - Market position (target customers, market share, funding/revenue, notable customers)
 - Recent news (last 12 months, with dates)
 
-Record every fact with its source URL. Do not invent numbers; write "not publicly disclosed"
-when a fact cannot be found.
+Record every fact with its source URL, copied exactly from the `url` field of an
+`internet_search` result; never write a URL from memory. Do not invent numbers; write
+"not publicly disclosed" when a fact cannot be found.
 Save your notes as Markdown to the folder named in your task, as
 {RESEARCH_DIR}/<company-slug>.md using `write_file` (slug = lowercase name with hyphens).
 Return a 3-line summary and the file path.
@@ -211,11 +218,14 @@ Return a one-line confirmation."""
 Read {REPORT_PATH} and the target's notes in {RESEARCH_DIR}/. Then review and tighten the report:
 - Verify every fact and attribution against the notes; use `internet_search` to spot-check
   doubtful or high-impact claims. Remove or flag anything unsupported.
-- Make sure every citation [n] matches a reference URL.
+- Make sure every citation [n] matches a reference URL, and every reference is cited at least
+  once in the text (remove unused references and renumber).
+- Make sure every reference URL appears in the notes or in a search result you ran yourself. For
+  a URL that does not, cite the retrieved source for the same fact instead, or remove the claim.
 - Improve narrative flow and readability; add context where a reader would need it.
 - Keep the report framed around the target, and keep the comparison table, Key takeaways list
-  and References section. Never merge or drop references — every distinct source URL keeps its
-  own [n]. The final report must follow these rules:
+  and References section. Never merge references or drop retrieved ones — every distinct source URL keeps
+  its own [n]; only a reference that was never retrieved may be removed. The final report must follow these rules:
 {REPORT_RULES}
 Overwrite {REPORT_PATH} with the improved version using `write_file`.
 {UNTRUSTED_RULE}
