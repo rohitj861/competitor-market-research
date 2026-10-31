@@ -28,6 +28,10 @@ from psycopg_pool import ConnectionPool, PoolTimeout
 import config
 
 ACTIVE = ("running", "awaiting_review")
+# Staleness is judged by the database clock, so app/database clock skew (Docker, Neon) cannot
+# make a live run look crashed or a crashed run look alive.
+RUNS = ("*, (status = 'running' AND updated_at < now() - make_interval(secs => "
+        f"{config.RUN_STALE_SECONDS})) AS is_stale")
 
 # Application schema migrations, applied in order and recorded in app_schema_migrations.
 # Each migration is one SQL script; statements are separated by ";" at line end.
@@ -101,6 +105,24 @@ class RunConflict(RuntimeError):
     """Another run is already in progress for this conversation."""
 
 
+def clean(value):
+    """Drop NUL characters, which PostgreSQL rejects in text and jsonb (web pages can contain them)."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {k: clean(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [clean(v) for v in value]
+    return value
+
+
+def _describe(exc: Exception) -> str:
+    """A connection error's message without any credentials in it."""
+    from redaction import redact_text
+
+    return redact_text(" ".join(str(exc).split()))[:300] or type(exc).__name__
+
+
 # ---------------------------------------------------------------- connections
 def database_url() -> str:
     url = config.require("DATABASE_URL", purpose="Persistent conversation memory")["DATABASE_URL"]
@@ -128,9 +150,14 @@ def open_pool(url: str | None = None, *, max_size: int = 10, wait_seconds: float
         pool.open(wait=True, timeout=wait_seconds)
     except PoolTimeout as exc:
         pool.close()
+        try:  # one direct attempt to report the real cause (wrong password, unknown host, ...)
+            psycopg.connect(url or database_url(), connect_timeout=5).close()
+            cause = "the connection pool timed out"
+        except Exception as direct:
+            cause = _describe(direct)
         raise DatabaseError(
-            f"Could not connect to PostgreSQL within {wait_seconds:.0f}s. Check DATABASE_URL, that the "
-            "server is running (docker compose ... up db) and reachable, and for Neon that the "
+            f"Could not connect to PostgreSQL within {wait_seconds:.0f}s: {cause}. Check DATABASE_URL, that "
+            "the server is running (docker compose ... up db) and reachable, and for Neon that the "
             "connection string includes sslmode=require.") from exc
     atexit.register(pool.close)
     return pool
@@ -207,12 +234,7 @@ class Run:
     log: list
     started_at: datetime
     updated_at: datetime
-
-    @property
-    def stale(self) -> bool:
-        """A 'running' run whose process stopped updating it (crash, restart, closed tab)."""
-        age = (datetime.now(self.updated_at.tzinfo) - self.updated_at).total_seconds()
-        return self.status == "running" and age > config.RUN_STALE_SECONDS
+    stale: bool = False  # 'running' but its process stopped updating it (crash, restart, closed tab)
 
 
 def _conv(row) -> Conversation:
@@ -223,7 +245,7 @@ def _conv(row) -> Conversation:
 def _run(row) -> Run:
     return Run(str(row["run_id"]), str(row["thread_id"]), row["submission_id"], row["status"], row["trace_id"],
                row["settings"], row["report_before"], row["attempts"], row["error"], row["log"],
-               row["started_at"], row["updated_at"])
+               row["started_at"], row["updated_at"], bool(row.get("is_stale")))
 
 
 def _msg(row) -> dict:
@@ -254,7 +276,7 @@ class ConversationStore:
         with self._conn() as conn:
             row = conn.execute(
                 "INSERT INTO conversations (thread_id, owner_id, title, settings) VALUES (%s, %s, %s, %s) "
-                "RETURNING *", (uuid.uuid4(), owner, title[:200], Jsonb(settings or {}))).fetchone()
+                "RETURNING *", (uuid.uuid4(), owner, clean(title)[:200], Jsonb(clean(settings or {})))).fetchone()
         return _conv(row)
 
     def get(self, owner: str, thread_id: str) -> Conversation | None:
@@ -267,14 +289,14 @@ class ConversationStore:
                                (thread_id, owner)).fetchone()
         return _conv(row) if row else None
 
-    def list(self, owner: str, limit: int = 100) -> list[Conversation]:
+    def list(self, owner: str) -> list[Conversation]:
         with self._conn() as conn:
-            rows = conn.execute("SELECT * FROM conversations WHERE owner_id = %s "
-                                "ORDER BY updated_at DESC LIMIT %s", (owner, limit)).fetchall()
+            rows = conn.execute("SELECT * FROM conversations WHERE owner_id = %s ORDER BY updated_at DESC",
+                                (owner,)).fetchall()
         return [_conv(r) for r in rows]
 
     def rename(self, owner: str, thread_id: str, title: str) -> bool:
-        title = " ".join(title.split())[:200]
+        title = " ".join(clean(title).split())[:200]
         if not title:
             return False
         with self._conn() as conn:
@@ -300,7 +322,7 @@ class ConversationStore:
                 conn.execute("UPDATE conversations SET updated_at = now() WHERE thread_id = %s", (thread_id,))
             else:
                 conn.execute("UPDATE conversations SET updated_at = now(), settings = %s WHERE thread_id = %s",
-                             (Jsonb(settings), thread_id))
+                             (Jsonb(clean(settings)), thread_id))
 
     # -- runs ----------------------------------------------------------------
     def start_run(self, thread_id: str, submission_id: str, *, settings: dict, trace_id: str,
@@ -311,7 +333,8 @@ class ConversationStore:
         marked failed first so a crashed process cannot block the conversation forever.
         """
         with self._conn() as conn, conn.transaction():
-            existing = conn.execute("SELECT * FROM conversation_runs WHERE thread_id = %s AND submission_id = %s",
+            existing = conn.execute(f"SELECT {RUNS} FROM conversation_runs WHERE thread_id = %s "
+                                    "AND submission_id = %s",
                                     (thread_id, submission_id)).fetchone()
             if existing:
                 return _run(existing), False
@@ -323,8 +346,8 @@ class ConversationStore:
                 with conn.transaction():
                     row = conn.execute(
                         "INSERT INTO conversation_runs (run_id, thread_id, submission_id, status, trace_id, settings, "
-                        "report_before) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING *",
-                        (uuid.uuid4(), thread_id, submission_id, status, trace_id, Jsonb(settings),
+                        f"report_before) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING {RUNS}",
+                        (uuid.uuid4(), thread_id, submission_id, status, trace_id, Jsonb(clean(settings)),
                          report_before)).fetchone()
             except psycopg.errors.UniqueViolation as exc:
                 raise RunConflict("Another run is already in progress in this conversation "
@@ -333,18 +356,18 @@ class ConversationStore:
 
     def get_run(self, run_id: str) -> Run | None:
         with self._conn() as conn:
-            row = conn.execute("SELECT * FROM conversation_runs WHERE run_id = %s", (run_id,)).fetchone()
+            row = conn.execute(f"SELECT {RUNS} FROM conversation_runs WHERE run_id = %s", (run_id,)).fetchone()
         return _run(row) if row else None
 
     def active_run(self, thread_id: str) -> Run | None:
         with self._conn() as conn:
-            row = conn.execute("SELECT * FROM conversation_runs WHERE thread_id = %s AND status = ANY(%s)",
+            row = conn.execute(f"SELECT {RUNS} FROM conversation_runs WHERE thread_id = %s AND status = ANY(%s)",
                                (thread_id, list(ACTIVE))).fetchone()
         return _run(row) if row else None
 
     def latest_run(self, thread_id: str) -> Run | None:
         with self._conn() as conn:
-            row = conn.execute("SELECT * FROM conversation_runs WHERE thread_id = %s "
+            row = conn.execute(f"SELECT {RUNS} FROM conversation_runs WHERE thread_id = %s "
                                "ORDER BY started_at DESC LIMIT 1", (thread_id,)).fetchone()
         return _run(row) if row else None
 
@@ -365,7 +388,7 @@ class ConversationStore:
         for key, value in fields.items():
             assert key in allowed, key
             sets.append(f"{key} = %s")
-            values.append(Jsonb(value) if key in ("log", "settings") else value)
+            values.append(Jsonb(clean(value)) if key in ("log", "settings") else clean(value))
         with self._conn() as conn:
             conn.execute(f"UPDATE conversation_runs SET {', '.join(sets)}, updated_at = now() WHERE run_id = %s",
                          (*values, run_id))
@@ -376,7 +399,7 @@ class ConversationStore:
                 conn.execute("UPDATE conversation_runs SET updated_at = now() WHERE run_id = %s", (run_id,))
             else:
                 conn.execute("UPDATE conversation_runs SET updated_at = now(), log = %s WHERE run_id = %s",
-                             (Jsonb(log), run_id))
+                             (Jsonb(clean(log)), run_id))
 
     # -- transcript ----------------------------------------------------------
     def add_message(self, thread_id: str, run_id: str, role: str, content: str, *, kind: str = "message",
@@ -388,8 +411,8 @@ class ConversationStore:
                 "INSERT INTO conversation_messages (message_id, thread_id, run_id, role, kind, content, guardrail, "
                 "evaluation, trace_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (run_id, role) DO NOTHING RETURNING *",
-                (uuid.uuid4(), thread_id, run_id, role, kind, content, Jsonb(guardrail or {}),
-                 Jsonb(evaluation or {}), trace_id)).fetchone()
+                (uuid.uuid4(), thread_id, run_id, role, kind, clean(content), Jsonb(clean(guardrail or {})),
+                 Jsonb(clean(evaluation or {})), trace_id)).fetchone()
             if row is None:
                 row = conn.execute("SELECT * FROM conversation_messages WHERE run_id = %s AND role = %s",
                                    (run_id, role)).fetchone()
@@ -419,12 +442,12 @@ class ConversationStore:
     def set_evaluation(self, message_id: str, evaluation: dict) -> None:
         with self._conn() as conn:
             conn.execute("UPDATE conversation_messages SET evaluation = %s WHERE message_id = %s",
-                         (Jsonb(evaluation), message_id))
+                         (Jsonb(clean(evaluation)), message_id))
 
     # -- evidence ------------------------------------------------------------
     def add_evidence(self, run_id: str, results: list[dict]) -> None:
-        rows = [(run_id, r["url"], r.get("title"), (r.get("content") or "")[:4000], r.get("published_date"))
-                for r in results if r.get("url")]
+        rows = [(run_id, clean(r["url"]), clean(r.get("title")), clean(r.get("content") or "")[:4000],
+                 clean(r.get("published_date"))) for r in results if r.get("url")]
         if not rows:
             return
         with self._conn() as conn:
@@ -454,7 +477,12 @@ def wait_for_database(url: str, timeout: float = 60) -> None:
                 conn.execute("SELECT 1")
             return
         except psycopg.OperationalError as exc:
+            detail = _describe(exc)
+            if re.search(r"password authentication failed|does not exist|no pg_hba.conf entry", detail, re.I):
+                raise DatabaseError(f"PostgreSQL refused the connection: {detail}. Retrying will not help: fix "
+                                    "DATABASE_URL (local Docker database: POSTGRES_PASSWORD must match the one "
+                                    "the volume was created with).") from exc
             if time.monotonic() > deadline:
-                raise DatabaseError(f"PostgreSQL not reachable after {timeout:.0f}s ({type(exc).__name__}). "
+                raise DatabaseError(f"PostgreSQL not reachable after {timeout:.0f}s: {detail}. "
                                     "Check DATABASE_URL and that the database server is running.") from exc
             time.sleep(2)

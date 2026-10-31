@@ -64,6 +64,7 @@ class Tracer:
         self.settings = settings or config.langfuse_settings()
         self.client = None
         self._health: tuple[float, bool] | None = None
+        self._flushing = threading.Lock()
         if not self.settings.enabled:
             return
         try:
@@ -123,6 +124,7 @@ class Tracer:
             return
         from langfuse import propagate_attributes
 
+        span_cm = None
         try:
             span_cm = self.client.start_as_current_observation(
                 trace_context={"trace_id": trace_id}, name=name, as_type="agent", input=input,
@@ -133,6 +135,11 @@ class Tracer:
             attrs_cm.__enter__()
         except Exception as exc:
             log.warning("Langfuse trace start failed: %s", type(exc).__name__)
+            if span_cm is not None:  # do not leave a half-started span open
+                try:
+                    span_cm.__exit__(None, None, None)
+                except Exception:
+                    pass
             yield TurnTrace(trace_id)
             return
         try:
@@ -166,6 +173,17 @@ class Tracer:
             log.warning("Langfuse score '%s' failed: %s", name, type(exc).__name__)
             return False
 
+    def delete_score(self, score_id: str) -> bool:
+        """Remove a score (e.g. feedback the user cleared). Best-effort, like every telemetry call."""
+        if not self.enabled:
+            return False
+        try:
+            self.client.api.scores.delete(score_id)
+            return True
+        except Exception as exc:
+            log.warning("Langfuse score delete failed: %s", type(exc).__name__)
+            return False
+
     def flush(self) -> None:
         if self.enabled:
             try:
@@ -175,8 +193,14 @@ class Tracer:
 
     def flush_in_background(self) -> None:
         """Export without blocking the UI (an unreachable Langfuse would otherwise stall a rerun)."""
-        if self.enabled:
-            threading.Thread(target=self.flush, name="langfuse-flush", daemon=True).start()
+        if self.enabled and self._flushing.acquire(blocking=False):  # one flush at a time, even if Langfuse is slow
+            def run():
+                try:
+                    self.flush()
+                finally:
+                    self._flushing.release()
+
+            threading.Thread(target=run, name="langfuse-flush", daemon=True).start()
 
     def shutdown(self) -> None:
         if self.enabled:

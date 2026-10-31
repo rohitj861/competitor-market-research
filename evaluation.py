@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from guards import check_citations
+from guards import check_citations, cited_numbers, reference_numbers, split_references
 
 EVALUATOR_VERSION = "mra-deterministic/1.0"
 JUDGE_RUBRIC_VERSION = "mra-judge-rubric/1.0"
@@ -86,14 +86,11 @@ def _norm_url(url: str) -> str:
 
 
 def _references(md: str) -> list[str]:
-    m = re.search(r"(?im)^#{1,3}\s*(?:references|sources)\b.*$", md)
-    refs = md[m.end():] if m else ""
-    return re.findall(r"https?://[^\s)\]>]+", refs)
+    return re.findall(r"https?://[^\s)\]>]+", split_references(md)[1])
 
 
 def _body(md: str) -> str:
-    m = re.search(r"(?im)^#{1,3}\s*(?:references|sources)\b.*$", md)
-    return md[: m.start()] if m else md
+    return split_references(md)[0]
 
 
 def _table_rows(md: str) -> list[list[str]]:
@@ -171,13 +168,15 @@ def citation_integrity(e: EvalInput) -> Score:
     refs = _references(e.response)
     if e.kind == "answer" and not refs and not re.search(r"\[\d+\]", e.response):
         return Score("citation_integrity", None, "answer has no citations", "unavailable")
+    body, refs_text = split_references(e.response)
+    cited, listed = cited_numbers(body), reference_numbers(refs_text)
     problems = check_citations(e.response)
-    cited = set(re.findall(r"\[(\d{1,3})\](?!\()", _body(e.response)))
-    ref_nums = set(re.findall(r"(?m)^\s*\[(\d{1,3})\]", e.response[len(_body(e.response)):]))
-    total = len(cited | ref_nums) or 1
-    bad = len(cited ^ ref_nums)
-    value = max(0.0, 1 - bad / total) if refs else 0.0
-    return Score("citation_integrity", value, "; ".join(problems) or "every citation has a reference")
+    if uncited := sorted(listed - cited):
+        problems.append(f"references never cited: {uncited[:10]}")
+    total = len(cited | listed) or 1
+    value = max(0.0, 1 - len(cited ^ listed) / total) if refs else 0.0
+    return Score("citation_integrity", value,
+                 "; ".join(problems) or "every citation has a reference and every reference is cited")
 
 
 def citation_support(e: EvalInput) -> Score:

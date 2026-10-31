@@ -13,8 +13,9 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+COPY requirements.txt constraints.txt ./
+# constraints.txt pins every transitive dependency, so rebuilds install exactly the tested versions
+RUN pip install -r requirements.txt -c constraints.txt
 
 COPY *.py eval_dataset.json ./
 

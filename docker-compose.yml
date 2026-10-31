@@ -7,9 +7,9 @@ services:
     build: .
     image: competitor-research:latest
     command: ["python", "manage.py", "init-db", "--wait", "90"]
-    env_file:
-      - path: .env
-        required: false
+    # Least privilege: it needs only the database URL, not the API keys in .env.
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-}
     restart: "no"
 
   app:

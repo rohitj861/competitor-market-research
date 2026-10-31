@@ -35,7 +35,7 @@ from redaction import redact, summarize
 warnings.filterwarnings("ignore", message="Could not obtain an event loop", category=UserWarning)
 
 MAX_INPUT_CHARS = 2000
-MIN_INPUT_CHARS = 2
+MIN_INPUT_CHARS = 1  # one-character company names exist (e.g. "X"); empty input is still rejected
 
 # Instruction-like phrases that try to override the agent's rules. Kept narrow so that
 # ordinary research requests ("compare Notion vs Coda", "ignore pricing, focus on
@@ -109,14 +109,66 @@ class InjectionHeuristic(Validator):
         return PassResult()
 
 
-_CITE = re.compile(r"\[(\d{1,3})\](?!\()")
-_REF_LINE = re.compile(r"^\s*\[(\d{1,3})\]\s+.*?(https?://\S+)", re.M)
+# Inline citations: [3], [1][2], [1, 2], [3-5] / [3–5]; not Markdown links like [text](url).
+_CITE = re.compile(r"\[(\d{1,3}(?:\s*[,\u2013-]\s*\d{1,3})*)\](?!\()")
+_REF_LINE = re.compile(r"^\s*\[(\d{1,3})\][:.]?\s+.*?(https?://\S+)", re.M)
+_REF_HEADING = re.compile(r"(?im)^#{1,3}\s*(?:\d+[.)]\s*)?(?:references?|sources?|bibliography|citations?)"
+                          r"(?:\s*(?:&|and)\s*(?:references?|sources?))?\s*:?\s*$")
 _TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$", re.M)
 
 
+def split_references(md: str) -> tuple[str, str]:
+    """(body, references). The LAST "References"/"Sources" heading starts the references, so a
+    body heading such as "## Sources of revenue" is not mistaken for them."""
+    headings = list(_REF_HEADING.finditer(md))
+    if not headings:
+        return md, ""
+    last = headings[-1]
+    return md[: last.start()], md[last.end():]
+
+
 def _references_section(md: str) -> str:
-    m = re.search(r"(?im)^#{1,3}\s*(?:references|sources)\b.*$", md)
-    return md[m.end():] if m else ""
+    return split_references(md)[1]
+
+
+def cited_numbers(body: str) -> set[int]:
+    """Reference numbers cited inline, expanding lists and ranges."""
+    numbers: set[int] = set()
+    for group in _CITE.findall(body):
+        for part in re.split(r"\s*,\s*", group):
+            bounds = [int(x) for x in re.split(r"\s*[\u2013-]\s*", part)]
+            if len(bounds) == 2 and 0 < bounds[1] - bounds[0] < 50:
+                numbers.update(range(bounds[0], bounds[1] + 1))
+            else:
+                numbers.update(bounds)
+    return numbers
+
+
+def drop_dangling_citations(md: str) -> tuple[str, list[int]]:
+    """Remove inline citation numbers that have no matching reference; never invent a source.
+
+    Returns (fixed report, removed numbers). Valid numbers in the same group are kept, e.g.
+    "[12][14]" -> "[12]", "[12, 14]" -> "[12]", "[13–15]" -> "[13, 15]" when 14 is dangling.
+    """
+    body, refs_text = split_references(md)
+    valid = reference_numbers(refs_text)
+    removed: set[int] = set()
+
+    def fix(match: re.Match) -> str:
+        numbers = sorted(cited_numbers(match.group(0)))
+        kept = [n for n in numbers if n in valid]
+        removed.update(n for n in numbers if n not in valid)
+        return f"[{', '.join(map(str, kept))}]" if kept else ""
+
+    fixed_body = _CITE.sub(fix, body)
+    fixed_body = re.sub(r"[ \t]+([.,;:])", r"\1", fixed_body)  # "claim [14]." -> "claim."
+    fixed_body = re.sub(r"[ \t]{2,}", " ", fixed_body)
+    return fixed_body + md[len(body):], sorted(removed)
+
+
+def reference_numbers(refs: str) -> set[int]:
+    """Reference numbers listed with a URL in the references section."""
+    return {int(n) for n, _ in _REF_LINE.findall(refs)}
 
 
 def check_report_structure(md: str) -> list[str]:
@@ -135,10 +187,9 @@ def check_report_structure(md: str) -> list[str]:
 
 def check_citations(md: str) -> list[str]:
     """Every inline [n] must have a reference with a URL, and references must be cited."""
-    refs_text = _references_section(md)
-    refs = {int(n) for n, _ in _REF_LINE.findall(refs_text)}
-    body = md[: len(md) - len(refs_text)] if refs_text else md
-    cited = {int(n) for n in _CITE.findall(body)}
+    body, refs_text = split_references(md)
+    refs = reference_numbers(refs_text)
+    cited = cited_numbers(body)
     problems = []
     if not refs:
         problems.append("no references with URLs")
@@ -224,7 +275,7 @@ _LOCK = threading.Lock()  # a Guard keeps per-call history; serialise access acr
 
 @dataclass
 class Decision:
-    action: str  # pass | redact | retry | reject | error
+    action: str  # pass | redact | repaired | retry | reject | error
     text: str  # the text to use downstream ("" when rejected)
     reasons: list[str] = field(default_factory=list)
     validators: dict[str, str] = field(default_factory=dict)  # validator -> pass/fail
@@ -232,7 +283,7 @@ class Decision:
 
     @property
     def usable(self) -> bool:
-        return self.action in ("pass", "redact")
+        return self.action in ("pass", "redact", "repaired")
 
     def summary(self) -> dict:
         """Sanitised record for storage and telemetry (no input/output text)."""
@@ -249,13 +300,15 @@ def validate(stage: str, text: str) -> Decision:
     except Exception as exc:  # validator crashed or Guardrails failed to run
         return Decision("error", "", [f"guardrail '{stage}' could not run ({type(exc).__name__})"])
 
+    if not isinstance(outcome.validated_output, str):  # no validated text: never fall back to the raw text
+        return Decision("error", "", [f"guardrail '{stage}' returned no validated output"])
     status = {s.validator_name: s.validator_status for s in outcome.validation_summaries}
     validators = {name: status.get(name, "pass") for name in roles}
     failed = [(s.validator_name, roles.get(s.validator_name, REJECT), s.failure_reason or "failed")
               for s in outcome.validation_summaries if s.validator_status == "fail"]
     by_role = {r: [f"{n}: {why}" for n, role, why in failed if role == r]
                for r in (REJECT, RETRY, REDACT, ADVISORY)}
-    fixed = outcome.validated_output if isinstance(outcome.validated_output, str) else text
+    fixed = _final_pass(stage, outcome.validated_output)
 
     if by_role[REJECT]:
         return Decision("reject", "", by_role[REJECT] + by_role[REDACT], validators)
@@ -264,6 +317,14 @@ def validate(stage: str, text: str) -> Decision:
     if by_role[REDACT]:
         return Decision("redact", fixed, by_role[REDACT], validators, by_role[ADVISORY])
     return Decision("pass", fixed, [], validators, by_role[ADVISORY])
+
+
+def _final_pass(stage: str, text: str) -> str:
+    """Re-apply the redactions directly, so a merge of several fixes can never let a value through."""
+    if stage == "input":
+        return redact(text, secrets=False)[0]  # secrets in input are rejected, not redacted
+    text = redact(text)[0]
+    return _INJECTION.sub(UNTRUSTED_REMOVED, text) if stage == "untrusted" else text
 
 
 def sanitize_untrusted(text: str) -> str:

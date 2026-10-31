@@ -82,7 +82,13 @@ You need [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Wind
 6. **Stop**: `docker compose down` (add the same `-f` files you started with). This keeps your data.
 
 PDFs saved with **Save PDF to reports folder** appear in `reports/` next to `docker-compose.yml`.
-**Port 8501 or 5432 already in use?** Set `APP_PORT=8502` / `POSTGRES_PORT=5433` in `.env`.
+**Port 8501 or 5432 already in use?** Set `APP_PORT=8502` / `POSTGRES_PORT=5433` in `.env` (if you change
+`POSTGRES_PORT`, change the port in `DATABASE_URL` too for runs outside Docker).
+
+Builds are reproducible: `constraints.txt` pins every transitive dependency to the versions in the
+tested image. After changing `requirements.txt`, rebuild and regenerate it with
+`docker run --rm --entrypoint pip competitor-research:latest freeze > constraints.txt` (keep the header comment).
+The one-shot `init-db` service receives only `DATABASE_URL`, not your API keys.
 
 > ⚠️ **Local conversation data lives in the Docker volume `mra-pgdata`.**
 > `docker compose ... down -v`, `docker volume rm` or *Clean / Purge data* in Docker Desktop
@@ -122,6 +128,7 @@ progress log, status) and `run_evidence` (search results used for evaluation).
 - **New conversation**, the **conversation list**, **Rename** and **Delete** are in the sidebar.
   Delete asks for confirmation and removes the transcript, runs, evidence and the agent's
   checkpoints. It does not delete traces already sent to Langfuse.
+- Times in the conversation list and report headers are shown in UTC.
 - The open conversation is in the URL (`?thread=<id>`), so refresh/bookmark works; the database is
   the source of truth. Each conversation is a separate LangGraph thread: memory is never shared
   between conversations.
@@ -193,6 +200,7 @@ checks, so they need no GPU and negligible CPU/RAM.
 | | personal data (email, phone, SSN, payment card) | **redact** and continue |
 | Web search results (untrusted) | instruction-like text, credentials, personal data | **redact** before any agent reads them; if validation cannot run, results are withheld |
 | Final report | empty | **reject** (not displayed or exported) |
+| | references not retrieved by the agents' own searches | prevented by the prompts; measured by the `citation_support` score |
 | | credentials / personal data | **redact** |
 | | report structure (title, comparison table, key takeaways, references) and citations | **retry**: one automatic repair turn; if still failing, shown and exportable with a visible *flagged* warning |
 | Follow-up answer | empty → reject; credentials/PII → redact; no citation in a long answer → advisory note |
@@ -221,7 +229,8 @@ For Neon, use Neon's branching / point-in-time restore, or `pg_dump "$env:DATABA
 | *Persistent conversation memory is not available … DATABASE_URL* | Set `DATABASE_URL` (or `POSTGRES_PASSWORD` for the local DB); `python manage.py check-config` |
 | *The database is not initialised* | `python manage.py init-db` (Docker: `docker compose run --rm init-db`) |
 | *Could not connect to PostgreSQL* | Is the DB running (`docker compose ps`)? Neon: include `sslmode=require`; Neon may need a few seconds to wake up, so retry. |
-| `password authentication failed` with the local DB | The volume was initialised with an earlier `POSTGRES_PASSWORD`; use that one (changing the variable does not change an existing database). |
+| `password authentication failed` with the local DB | The volume was initialised with an earlier `POSTGRES_PASSWORD`; use that one (changing the variable does not change an existing database). `init-db` stops immediately on this error instead of retrying. |
+| *Could not save the PDF* (Linux Docker hosts) | `reports/` was created by root: `sudo chown 1000:1000 reports`, or use **Download PDF** |
 | `init-db` exited with an error, app not started | `docker compose logs init-db` |
 | *A run is in progress … in another tab* | Wait for it, or after a crash wait ~2 minutes and use **Retry from last step** / **Discard this run** |
 | Sidebar: *Langfuse tracing: unavailable* | Check keys and `LANGFUSE_BASE_URL` (region!); research continues without tracing |
@@ -252,6 +261,7 @@ exporter, so the tests cost nothing; each run creates and drops its own temporar
 | `config.py` / `manage.py` | Configuration validation / CLI (`check-config`, `init-db`, `eval`) |
 | `pdf_export.py` | Markdown → PDF (fpdf2; Unicode fonts from Windows, or DejaVu/Lohit/WenQuanYi in Docker) |
 | `Dockerfile`, `docker-compose.yml`, `docker-compose.local-db.yml` | Image, app + init-db, optional local PostgreSQL |
+| `constraints.txt` | Exact versions of every dependency in the tested image (used by the Dockerfile) |
 | `tests/` | Automated tests (fakes for paid services) |
 
 ## Notes

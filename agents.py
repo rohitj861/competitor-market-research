@@ -25,6 +25,7 @@ JSON_PATH = f"{RESEARCH_DIR}/structured.json"
 # Called with (run config, query, results) after every search; the app stores the results
 # as evidence for groundedness/citation evaluation.
 SearchSink = Callable[[dict, str, list[dict]], None]
+MAX_SEARCH_RESULTS = 10  # upper bound per search call, whatever the model asks for
 
 # Research depth presets: how hard each agent searches and how rich the report is.
 DEPTHS = {
@@ -75,7 +76,8 @@ def make_search_tool(depth: str, on_results: SearchSink | None = None, client=No
                 query,
                 topic=topic,
                 search_depth=cfg["search_depth"],
-                max_results=max_results or cfg["max_results"],
+                # the model chooses max_results; cap it so one call cannot run up search costs
+                max_results=min(max(max_results or cfg["max_results"], 1), MAX_SEARCH_RESULTS),
             )
         except Exception as exc:  # a failed search shouldn't kill the whole run
             detail = redact_text(str(exc))[:200]

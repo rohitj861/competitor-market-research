@@ -73,6 +73,7 @@ class RecordingTracer:
 
         self._real = Tracer(config.LangfuseSettings(False, "disabled in tests"))
         self.scores: list[dict] = []
+        self.deleted: list[str] = []
         self.turns: list[dict] = []
 
     enabled = False
@@ -86,6 +87,10 @@ class RecordingTracer:
 
     def score(self, **kwargs):
         self.scores.append(kwargs)
+        return True
+
+    def delete_score(self, score_id):
+        self.deleted.append(score_id)
         return True
 
     def status(self, check=False):

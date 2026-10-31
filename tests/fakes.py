@@ -54,6 +54,7 @@ def bad_report(target: str) -> str:
 
 class FakeResearchModel(BaseChatModel):
     bad_first_report: bool = False
+    dangling_citation: bool = False  # every report (and every repair) cites a missing [9]
     leak_secret: bool = False
     fail_next: int = 0  # raise on the next N orchestrator calls (simulates a provider outage)
     calls: list = Field(default_factory=list)
@@ -104,7 +105,7 @@ class FakeResearchModel(BaseChatModel):
         if question.startswith("[Automated validation]"):
             target = next((t.split(":", 1)[1].strip() for t in earlier if t.startswith("Research the")), "Target")
             if not any(isinstance(m, ToolMessage) for m in tail):
-                return self._call("write_file", file_path="/final_report.md", content=good_report(target))
+                return self._call("write_file", file_path="/final_report.md", content=self._report(target))
             return AIMessage(content="Report repaired.")
         if question.startswith("Research the competitors of:"):
             target = question.split(":", 1)[1].strip()
@@ -140,11 +141,15 @@ class FakeResearchModel(BaseChatModel):
                               content=f"# {target}\nAcme costs $12 per user per month (https://acme.example/pricing)")
         return AIMessage(content=f"Researched {target}; notes in /research/{slug}/{slug}.md")
 
+    def _report(self, target: str) -> str:
+        report = good_report(target)
+        return report.replace("priced below Acme [1].", "priced below Acme [1][9].") if self.dangling_citation else report
+
     def _synthesizer(self, messages) -> AIMessage:
         task, tail, _ = self._turn(messages)
         target = re.search(r"Target: ([^(]+)", task).group(1).strip()
         if not any(isinstance(m, ToolMessage) for m in tail):
-            report = bad_report(target) if self.bad_first_report else good_report(target)
+            report = bad_report(target) if self.bad_first_report else self._report(target)
             return self._call("write_file", file_path="/final_report.md", content=report)
         return AIMessage(content="Report written to /final_report.md")
 

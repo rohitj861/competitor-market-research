@@ -31,8 +31,10 @@ log = logging.getLogger("mra.runner")
 DEFAULT_TITLE = "New conversation"
 REPAIR_PROMPT = """[Automated validation] The final report failed these checks:
 {problems}
-Fix {path} so it satisfies every rule (keep the content and sources; do not invent references),
-then reply with ONLY the corrected report."""
+Fix {path} so it satisfies every rule (keep the content and sources; do not invent references).
+For a citation without a matching reference: add that reference with its URL from the research
+notes, or remove the citation if the notes have no such source.
+Then reply with ONLY the corrected report."""
 
 
 # ---------------------------------------------------------------- text helpers
@@ -56,6 +58,8 @@ def tidy_markdown(md: str) -> str:
     """Normalise the agent's Markdown so it renders cleanly in Streamlit and the PDF."""
     md = md.strip()
     md = re.sub(r"^```(?:markdown|md)?\s*\n(.*)\n```$", r"\1", md, flags=re.S)  # unwrap fenced reply
+    # images would make the viewer's browser fetch URLs taken from untrusted pages: keep the alt text
+    md = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", md)
     lines = md.split("\n")
     out = []
     for line in lines:
@@ -181,7 +185,6 @@ class Runner:
         conv = self.store.get(owner, thread_id)
         if conv is None:
             raise PermissionError("Conversation not found for this user.")
-        first_turn = not self.store.messages(thread_id)
         trace_id = trace_id or new_trace_id()
         decision = guards.validate("input", text)
 
@@ -189,7 +192,10 @@ class Runner:
             return self._reject_input(owner, conv, text, submission_id, settings, decision, trace_id)
 
         agent = self._agent(settings)
-        report = file_text((self._state(agent, thread_id).values.get("files") or {}).get(REPORT_PATH))
+        state = self._state(agent, thread_id).values
+        report = file_text((state.get("files") or {}).get(REPORT_PATH))
+        # The agent has not seen any request yet (a refused first message never reached it).
+        first_turn = not any(getattr(m, "type", None) == "human" for m in state.get("messages") or [])
         prompt = f"Research the competitors of: {decision.text}" if first_turn else decision.text
         try:
             run, created = self.store.start_run(thread_id, submission_id, settings={**settings, "prompt": prompt},
@@ -201,7 +207,7 @@ class Runner:
 
         self.store.add_message(thread_id, run.run_id, "user", decision.text, guardrail=decision.summary(),
                                trace_id=trace_id)
-        if first_turn and conv.title == DEFAULT_TITLE:
+        if conv.title == DEFAULT_TITLE:
             self.store.rename(owner, thread_id, decision.text[:60])
         self.store.touch(thread_id, settings)
         notices = ["Personal data in your message was redacted before it was sent."] \
@@ -386,6 +392,8 @@ class Runner:
                                               settings={**settings, "prompt": prompt})
                         payload = {"messages": [{"role": "user", "content": prompt}]}
                         continue
+                    if decision.action == "retry":  # repair budget used up: try the safe mechanical fix
+                        decision = self._drop_dangling(kind, decision, run_log, emit)
                     return self._finish(owner, run, kind, decision, run_log, turn)
         except DatabaseError:
             raise
@@ -405,6 +413,25 @@ class Runner:
                 pass
             raise
 
+    def _drop_dangling(self, kind: str, decision: guards.Decision, run_log: list, emit) -> guards.Decision:
+        """Remove citation markers that point to no reference, if that is all that is wrong.
+
+        Only markers are removed (never sources added), and the result must pass the full
+        output guard again; otherwise the original flagged decision is kept.
+        """
+        fixed, removed = guards.drop_dangling_citations(decision.text)
+        if not removed:
+            return decision
+        again = guards.validate(kind, fixed)
+        if not again.usable:
+            return decision
+        note = f"Removed citation marker(s) {removed} that had no matching reference."
+        run_log.append(f"🛠️ {note}")
+        emit(f"🛠️ {note}")
+        again.action = "repaired"
+        again.reasons = [note] + again.reasons
+        return again
+
     def _response(self, snapshot, report_before: str | None) -> tuple[str, str]:
         """A rewritten /final_report.md is a report; otherwise the orchestrator's reply is an answer."""
         report = file_text((snapshot.values.get("files") or {}).get(REPORT_PATH))
@@ -423,6 +450,8 @@ class Runner:
                            + "; ".join(decision.reasons))
         if decision.action == "redact":
             notices.append("Sensitive data in the response was redacted.")
+        if decision.action == "repaired":
+            notices.append(decision.reasons[0])
         if decision.usable or decision.action == "retry":
             content, stored_kind = decision.text, kind
         else:
@@ -461,6 +490,7 @@ class Runner:
         msg = self.store.set_feedback(owner, message_id, value)
         if msg and msg.get("trace_id"):
             if value is None:
+                self.tracer.delete_score(f"{message_id}-user_feedback")
                 return msg
             self.tracer.score(trace_id=msg["trace_id"], name="user_feedback", value=1 if value > 0 else 0,
                               data_type="BOOLEAN", score_id=f"{message_id}-user_feedback",
