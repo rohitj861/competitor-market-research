@@ -170,7 +170,8 @@ python manage.py eval --judge --confirm-cost                                    
 Results are written to `eval_results/<run>.json` (scores, comments, evaluator/judge versions,
 score definitions). The dataset (`eval_dataset.json`, fictional companies) covers normal research,
 follow-ups, thread isolation, legitimate comparisons, and failure cases (empty, oversized, secret,
-injection, leaked secret in output).
+injection, leaked secret in output). Items marked `"live": false` score hand-crafted fixture answers
+(e.g. a deliberately leaked key) and are skipped in live mode.
 
 - **Deterministic scores** (`evaluation.py`, also attached to every live response): relevance,
   completeness against explicit requirements, citation integrity, **citation support** (cited URLs

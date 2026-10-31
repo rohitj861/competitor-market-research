@@ -166,6 +166,11 @@ def _as_langfuse(results: list[dict]):
 def main(args) -> int:
     data = evaluation.load_dataset()
     items = [i for i in data["items"] if not args.items or i["id"] in args.items]
+    if args.mode == "live":  # crafted-fixture cases (e.g. a deliberately leaked key) cannot be reproduced live
+        skipped = [i["id"] for i in items if i.get("live") is False]
+        items = [i for i in items if i.get("live") is not False]
+        if skipped:
+            print(f"Skipping offline-only items in live mode: {', '.join(skipped)}")
     if not items:
         print("No dataset items match --items.")
         return 1
