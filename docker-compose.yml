@@ -1,13 +1,29 @@
+# External PostgreSQL (e.g. Neon): set DATABASE_URL in .env, then
+#   docker compose up --build -d
+# Local PostgreSQL in Docker instead: see docker-compose.local-db.yml.
 services:
+  # One-shot schema setup/upgrade; the app starts only after it succeeds. Safe to re-run.
+  init-db:
+    build: .
+    image: competitor-research:latest
+    command: ["python", "manage.py", "init-db", "--wait", "90"]
+    env_file:
+      - path: .env
+        required: false
+    restart: "no"
+
   app:
     build: .
     image: competitor-research:latest
     ports:
-      - "8501:8501"
-    # API keys come from .env at runtime (optional: they can also be entered in the app sidebar).
+      - "${APP_PORT:-8501}:8501"
+    # Credentials come from .env at runtime only (never copied into the image).
     env_file:
       - path: .env
         required: false
     volumes:
       - ./reports:/app/reports  # PDFs saved with "Save PDF to reports folder" appear here
+    depends_on:
+      init-db:
+        condition: service_completed_successfully
     restart: unless-stopped

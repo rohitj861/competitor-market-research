@@ -10,5 +10,7 @@ __pycache__/
 .venv/
 venv/
 
-# generated reports
+# generated reports and evaluation results
 reports/
+eval_results/
+.pytest_cache/

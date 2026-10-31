@@ -1,0 +1,41 @@
+# Adds a local PostgreSQL 17 container. Use both files together:
+#   docker compose -f docker-compose.yml -f docker-compose.local-db.yml up --build -d
+# Needs POSTGRES_PASSWORD in .env (letters and digits only, since it goes into a URL).
+#
+# WARNING: conversations live in the named volume "mra-pgdata". `docker compose down -v`
+# or `docker volume rm` DELETES ALL LOCAL CONVERSATION DATA. Back up first (see README).
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: mra
+      POSTGRES_DB: mra
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env to use the local database}
+    volumes:
+      - mra-pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"  # localhost only, for `streamlit run` outside Docker
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mra -d mra"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  init-db:
+    environment:
+      DATABASE_URL: postgresql://mra:${POSTGRES_PASSWORD}@db:5432/mra
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    environment:
+      DATABASE_URL: postgresql://mra:${POSTGRES_PASSWORD}@db:5432/mra
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  mra-pgdata:

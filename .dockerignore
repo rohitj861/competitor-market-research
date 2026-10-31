@@ -9,6 +9,10 @@ __pycache__/
 .venv/
 venv/
 reports/
+eval_results/
+tests/
+requirements-dev.txt
+.pytest_cache/
 .git/
 .gitignore
 .vscode/
@@ -19,5 +23,5 @@ reports/
 README.md
 *System prompts.txt
 Dockerfile
-docker-compose.yml
+docker-compose*.yml
 .dockerignore

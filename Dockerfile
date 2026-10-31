@@ -16,8 +16,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY agents.py app.py pdf_export.py ./
+COPY *.py eval_dataset.json ./
 
+# No credentials are baked in: .env is excluded by .dockerignore and injected at runtime.
 # Run as a non-root user; reports/ is where "Save PDF to reports folder" writes.
 RUN useradd --create-home --uid 1000 appuser \
     && mkdir -p /app/reports \
