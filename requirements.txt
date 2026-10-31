@@ -9,6 +9,9 @@ langfuse==5.1.0  # optional tracing/evaluation; the app runs without Langfuse cr
 guardrails-ai==0.10.2  # input/output validation with local validators (no Hub token needed)
 tavily-python==0.8.5
 streamlit==1.58.0
+# Streamlit 1.58's gzip middleware is incompatible with starlette>=1.8 (images, PDF preview and
+# favicon fail with HTTP 500: "Expected ASGI message 'http.response.start'"). Remove when fixed upstream.
+starlette==1.7.0
 python-dotenv==1.2.2
 markdown==3.10.3
 fpdf2==2.8.8

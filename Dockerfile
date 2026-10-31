@@ -1,8 +1,8 @@
+# syntax=docker/dockerfile:1
 FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Unicode fonts for the PDF export: DejaVu (body, ₹/€/smart quotes), Lohit (Hindi), WenQuanYi (Chinese)
@@ -15,7 +15,10 @@ WORKDIR /app
 
 COPY requirements.txt constraints.txt ./
 # constraints.txt pins every transitive dependency, so rebuilds install exactly the tested versions
-RUN pip install -r requirements.txt -c constraints.txt
+# The pip cache lives in a BuildKit cache mount (not in the image): rebuilds and interrupted
+# builds reuse already-downloaded packages instead of fetching everything again.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt -c constraints.txt
 
 COPY *.py eval_dataset.json ./
 
